@@ -96,6 +96,40 @@ header h1 { font-size: 1.2rem; color: var(--accent); }
 .refresh-info { font-size: 0.75rem; color: var(--text-muted); }
 .loading { text-align: center; padding: 24px; color: var(--text-muted); }
 
+/* Deploy timeline */
+.deploy-toggle {
+  margin-top: 12px; padding: 6px 12px;
+  background: var(--bg); border: 1px solid var(--text-muted);
+  border-radius: 6px; color: var(--text-dim); cursor: pointer;
+  font-size: 0.75rem; font-family: inherit; width: 100%;
+  text-align: center; transition: all 0.2s;
+}
+.deploy-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.deploy-timeline {
+  margin-top: 8px; display: none;
+}
+.deploy-timeline.open { display: block; }
+.deploy-entry {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 6px;
+  background: var(--bg); margin-bottom: 4px;
+  font-size: 0.78rem;
+}
+.deploy-entry .deploy-icon { font-size: 1rem; min-width: 20px; text-align: center; }
+.deploy-entry .deploy-info { flex: 1; }
+.deploy-entry .deploy-info .deploy-commit {
+  color: var(--text); font-family: monospace; font-size: 0.72rem;
+}
+.deploy-entry .deploy-info .deploy-date {
+  color: var(--text-muted); font-size: 0.7rem;
+}
+.deploy-entry .deploy-status-text {
+  font-size: 0.68rem; font-weight: 600; padding: 1px 8px; border-radius: 8px;
+}
+.deploy-entry.loading {
+  justify-content: center; color: var(--text-muted); font-style: italic;
+}
+
 /* Responsive & Mobile - Universal */
 @media (max-width: 768px) {
   html { font-size: 15px; }
@@ -223,6 +257,75 @@ function statusClass(state) {
   return 'status-unknown';
 }
 
+function deployIcon(status) {
+  const s = (status || '').toLowerCase();
+  if (['success', 'successful', 'running', 'active'].includes(s)) return '✅';
+  if (['failed', 'error', 'failure'].includes(s)) return '❌';
+  if (['pending', 'queued', 'in_progress', 'deploying'].includes(s)) return '🟡';
+  return '❓';
+}
+
+function deployStatusClass(status) {
+  const s = (status || '').toLowerCase();
+  if (['success', 'successful', 'running', 'active'].includes(s)) return 'status-running';
+  if (['failed', 'error', 'failure'].includes(s)) return 'status-failed';
+  if (['pending', 'queued', 'in_progress', 'deploying'].includes(s)) return 'status-degraded';
+  return 'status-unknown';
+}
+
+function deployStatusText(status) {
+  const s = (status || '').toLowerCase();
+  if (['success', 'successful'].includes(s)) return 'Success';
+  if (['running', 'active'].includes(s)) return 'Running';
+  if (['failed', 'error', 'failure'].includes(s)) return 'Failed';
+  if (['pending', 'queued'].includes(s)) return 'Pending';
+  if (['in_progress', 'deploying'].includes(s)) return 'In Progress';
+  return s || 'Unknown';
+}
+
+async function toggleTimeline(btn, appId) {
+  const card = btn.closest('.card');
+  const timeline = card.querySelector('.deploy-timeline');
+  if (timeline.classList.contains('open')) {
+    timeline.classList.remove('open');
+    btn.textContent = '📜 Show Deploy History';
+    return;
+  }
+  timeline.classList.add('open');
+  btn.textContent = '⏳ Loading...';
+  btn.disabled = true;
+
+  try {
+    const cfg = getConfig();
+    if (!cfg) return;
+    const data = await coolifyFetch(cfg, `/deployments?application_id=${encodeURIComponent(appId)}`);
+    let deployments = Array.isArray(data) ? data : (data.data || data.deployments || []);
+    deployments = deployments.slice(0, 5);
+
+    if (deployments.length === 0) {
+      timeline.innerHTML = '<div class="deploy-entry" style="justify-content:center;color:var(--text-muted)">No deployments found</div>';
+    } else {
+      timeline.innerHTML = deployments.map(d => {
+        const status = d.status || d.state || 'unknown';
+        const commit = (d.commit || d.git_commit || '').substring(0, 7);
+        const commitDisplay = commit ? `<span class="deploy-commit">${escapeHtml(commit)}</span> ` : '';
+        const date = d.created_at || d.started_at || d.finished_at || '';
+        const dateDisplay = date ? `<span class="deploy-date">${formatDate(date)}</span>` : '';
+        return `<div class="deploy-entry">
+          <span class="deploy-icon">${deployIcon(status)}</span>
+          <div class="deploy-info">${commitDisplay}${dateDisplay}</div>
+          <span class="deploy-status-text ${deployStatusClass(status)}">${deployStatusText(status)}</span>
+        </div>`;
+      }).join('');
+    }
+    btn.textContent = '📜 Hide Deploy History';
+  } catch(e) {
+    timeline.innerHTML = `<div class="deploy-entry" style="justify-content:center;color:var(--red)">⚠️ ${escapeHtml(e.message)}</div>`;
+    btn.textContent = '📜 Show Deploy History';
+  }
+  btn.disabled = false;
+}
+
 async function fetchData() {
   const cfg = getConfig();
   if (!cfg) return;
@@ -250,9 +353,10 @@ async function fetchData() {
       const uptime = app.uptime || app.started_at || null;
       const domain = app.fqdn || app.url || '—';
       const lastDeploy = app.deployed_at || app.updated_at || '—';
+      const appId = app.id || app.uuid || app.application_id || '';
 
       html += `
-<div class="card">
+<div class="card" data-app-id="${escapeAttr(appId)}">
   <div class="card-header">
     <h3>${escapeHtml(name)}</h3>
     <span class="status ${statusClass(status)}">${escapeHtml(status)}</span>
@@ -275,6 +379,8 @@ async function fetchData() {
   <div style="font-size:0.7rem;color:var(--text-muted);margin-top:8px">
     Last deploy: ${escapeHtml(String(lastDeploy))}
   </div>
+  <button class="deploy-toggle" onclick="toggleTimeline(this, '${escapeAttr(appId)}')">📜 Show Deploy History</button>
+  <div class="deploy-timeline"></div>
 </div>`;
     }
     dash.innerHTML = html;
@@ -299,6 +405,17 @@ function escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/['"\\]/g, '');
+}
+
+function formatDate(val) {
+  if (!val) return '';
+  const dt = new Date(val);
+  if (isNaN(dt.getTime())) return String(val);
+  return dt.toLocaleString();
 }
 
 function formatUptime(val) {
